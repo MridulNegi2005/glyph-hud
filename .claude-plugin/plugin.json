@@ -1,0 +1,17 @@
+{
+  "name": "glyph-hud",
+  "version": "0.1.0",
+  "description": "Dot-matrix HUD for Claude Code: chat tokens by model, 5-hour limit estimates, cache timer and code stats. Local only, no model calls.",
+  "author": { "name": "Mridul Negi", "url": "https://github.com/MridulNegi2005" },
+  "repository": "https://github.com/MridulNegi2005/glyph-hud",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "blockAttribution": {
+      "type": "boolean",
+      "title": "Block Co-Authored-By commits",
+      "description": "Deny git commit commands that contain a Co-Authored-By trailer.",
+      "default": false
+    }
+  }
+}

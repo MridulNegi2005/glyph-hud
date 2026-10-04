@@ -1,0 +1,7 @@
+tsconfig.json
+.claude-plugin/types/
+.claude/
+__pycache__/
+*.pyc
+.env
+.env.*

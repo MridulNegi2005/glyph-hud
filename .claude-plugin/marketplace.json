@@ -1,0 +1,15 @@
+{
+  "name": "glyph-hud",
+  "description": "Glyph HUD: a dot-matrix status pane for Claude Code.",
+  "owner": {
+    "name": "Mridul Negi",
+    "url": "https://github.com/MridulNegi2005"
+  },
+  "plugins": [
+    {
+      "name": "glyph-hud",
+      "source": "./",
+      "description": "Dot-matrix HUD for Claude Code: chat tokens by model, 5-hour limit estimates, cache timer and code stats."
+    }
+  ]
+}
