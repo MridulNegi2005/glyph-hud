@@ -1,7 +1,7 @@
 {
   "name": "glyph-hud",
   "version": "0.1.0",
-  "description": "Dot-matrix HUD for Claude Code: chat tokens by model, 5-hour limit estimates, cache timer and code stats. Local only, no model calls.",
+  "description": "Dot-matrix HUD for Claude Code: chat tokens by model, 5-hour limit use, cache timer and code stats. Local only, no model calls.",
   "author": { "name": "Mridul Negi", "url": "https://github.com/MridulNegi2005" },
   "repository": "https://github.com/MridulNegi2005/glyph-hud",
   "license": "MIT",

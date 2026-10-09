@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ChatUsage, ColdEstimate, GlyphLifetime, GlyphStats, ModelTally } from '../types'
+import type { ChatUsage, GlyphLifetime, GlyphStats, ModelTally } from '../types'
 
 const PANE = 'glyph-hud'
 const RED = '#D71921'
@@ -40,7 +40,6 @@ const NO_USAGE: ChatUsage = { models: [], scannedAt: 0 }
 const stats = atom({ plugin: 'glyph-hud', key: 'stats' } as const, EMPTY)
 const lifetime = atom({ plugin: 'glyph-hud', key: 'lifetime' } as const, NO_LIFETIME)
 const usage = atom({ plugin: 'glyph-hud', key: 'usage' } as const, NO_USAGE)
-const cold = atom({ plugin: 'glyph-hud', key: 'cold' } as const, { pairs: [] } as ColdEstimate)
 const isLive = atom({ plugin: 'glyph-hud', key: 'isLive' } as const, false)
 
 // 5x7 dot-matrix glyphs, one string per row.
@@ -109,65 +108,6 @@ const codeTiles = (s: GlyphStats, life: GlyphLifetime): [string, string, boolean
   ['ALL-TIME', `${compact(life.toolCalls + s.toolCalls)} calls`],
 ]
 
-// --- 5-hour limit estimate ------------------------------------------------
-
-const PAIR_WINDOW = 60
-const MAX_GAP_MS = 90_000
-const MIN_PCT_SUM = 0.3
-
-// Input-token equivalents: output is priced 5x input, cache reads 0.1x,
-// cache writes 2x (1-hour TTL) or 1.25x (5-minute TTL).
-const writeWeight = () => (cacheTtlMs >= 60 * 60 * 1000 ? 2 : 1.25)
-
-type StepUsage = {
-  input_tokens: number
-  output_tokens: number
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-}
-
-const unitsOfStep = (u: StepUsage) =>
-  u.input_tokens + u.cache_creation_input_tokens * writeWeight() + u.cache_read_input_tokens * 0.1 + u.output_tokens * 5
-
-// Only deltas between readings seconds apart count, so other chats barely leak in.
-async function recordStep($: EngineInterface, u: StepUsage, isFirstOfTurn: boolean) {
-  const session = await $.session.usage()
-  const five = session.rateLimits.find(r => r.kind === 'five_hour')
-  if (!five) return
-  const now = Date.now()
-  const isCold = isFirstOfTurn && u.cache_creation_input_tokens > 20_000 && u.cache_read_input_tokens < u.cache_creation_input_tokens
-
-  await update($, cold, c => {
-    const base = c ?? { pairs: [] }
-    let pairs = base.pairs ?? []
-    const prev = base.prev
-    let lastCold = base.lastCold
-    const dPct = prev ? five.percentUsed - prev.pct : 0
-
-    if (prev && dPct < 0) pairs = []
-    else if (prev && now - prev.at <= MAX_GAP_MS) {
-      pairs = [...pairs, { units: unitsOfStep(u), dPct }].slice(-PAIR_WINDOW)
-    }
-    if (isCold && prev && dPct >= 0) {
-      lastCold = { before: prev.pct, after: five.percentUsed, staleMinutes: Math.round((now - prev.at) / 60_000), at: now }
-    }
-
-    const units = pairs.reduce((a, p) => a + p.units, 0)
-    const pct = pairs.reduce((a, p) => a + p.dPct, 0)
-    const perUnit = units > 0 && pct >= MIN_PCT_SUM ? pct / units : undefined
-    const ctx = session.context.tokens
-    return {
-      pairs,
-      prev: { pct: five.percentUsed, at: now },
-      fiveHourPct: five.percentUsed,
-      pctPerMUnits: perUnit === undefined ? undefined : perUnit * 1_000_000,
-      coldPct: perUnit === undefined || ctx === undefined ? undefined : perUnit * ctx * writeWeight(),
-      lastCold,
-    }
-  })
-  await refreshStatus($)
-}
-
 // --- transcript scan -------------------------------------------------------
 
 let transcriptPath: string | undefined
@@ -220,9 +160,10 @@ async function scanUsage($: EngineInterface, force = false) {
     const session = await $.session.usage()
     const costUsd = session.cost?.usd
     const contextPct = session.context.percent
+    const fiveHourPct = session.rateLimits.find(r => r.kind === 'five_hour')?.percentUsed
 
     if (!main) {
-      await update($, usage, u => ({ ...u, costUsd, contextPct, error: 'transcript not found', scannedAt: Date.now() }))
+      await update($, usage, u => ({ ...u, costUsd, contextPct, fiveHourPct, error: 'transcript not found', scannedAt: Date.now() }))
       return
     }
 
@@ -230,7 +171,7 @@ async function scanUsage($: EngineInterface, force = false) {
     const sizes = await Promise.all(files.map(f => $.fs.stat(f).then(s => s.size)))
     const signature = files.map((f, i) => `${f}:${sizes[i]}`).join('|')
     if (!force && signature === lastSignature) {
-      await update($, usage, u => ({ ...u, costUsd, contextPct }))
+      await update($, usage, u => ({ ...u, costUsd, contextPct, fiveHourPct }))
       return
     }
 
@@ -280,8 +221,7 @@ async function scanUsage($: EngineInterface, force = false) {
 
     lastSignature = signature
     const models = [...byModel.values()].sort((a, b) => totalOf(b) - totalOf(a))
-    const next = { models, costUsd, contextPct, scannedAt: Date.now() }
-    await update($, usage, () => next)
+    await update($, usage, () => ({ models, costUsd, contextPct, fiveHourPct, scannedAt: Date.now() }))
   } catch (err) {
     await update($, usage, u => ({ ...u, error: String(err).slice(0, 80) }))
   } finally {
@@ -313,7 +253,7 @@ function dotBar(x: number, y: number, count: number, lit: number, gap: number, r
   return s
 }
 
-function svgHud(s: GlyphStats, life: GlyphLifetime, u: ChatUsage, c: ColdEstimate, live: boolean) {
+function svgHud(s: GlyphStats, life: GlyphLifetime, u: ChatUsage, live: boolean) {
   const W = 400
   const P = 20
   const font = `font-family="ui-monospace, 'JetBrains Mono', Consolas, monospace"`
@@ -348,25 +288,15 @@ function svgHud(s: GlyphStats, life: GlyphLifetime, u: ChatUsage, c: ColdEstimat
   out.push(dotBar(P + 4, y, ctxDots, Math.round(((u.contextPct ?? 0) / 100) * ctxDots), (W - 2 * P - 8) / (ctxDots - 1), 3, LIT))
   y += 34
 
-  out.push(label(P, y, 'COLD CACHE CALL'))
-  out.push(label(P + col3 * 2, y, '5H USED'))
+  out.push(label(P, y, '5-HOUR LIMIT USED'))
   out.push(
-    value(P, y + 24, c.coldPct === undefined ? 'calibrating' : `≈ ${c.coldPct.toFixed(1)}% of 5h`, c.coldPct === undefined ? MUTED : RED),
+    `<text x="${W - P}" y="${y}" text-anchor="end" ${font} font-size="14" font-weight="700" fill="${LIT}">${
+      u.fiveHourPct === undefined ? '—' : `${u.fiveHourPct}%`
+    }</text>`,
   )
-  out.push(value(P + col3 * 2, y + 24, c.fiveHourPct === undefined ? '—' : `${c.fiveHourPct}%`))
-  y += 44
-  if (c.lastCold) {
-    const lc = c.lastCold
-    out.push(
-      label(
-        P,
-        y,
-        `LAST COLD: ${lc.before}% → ${lc.after}% (+${(lc.after - lc.before).toFixed(1)}) · BEFORE ${lc.staleMinutes}M OLD`,
-      ).replace('letter-spacing="2"', 'letter-spacing="0.5"'),
-    )
-    y += 20
-  }
-  y += 6
+  y += 16
+  out.push(dotBar(P + 4, y, ctxDots, Math.round(((u.fiveHourPct ?? 0) / 100) * ctxDots), (W - 2 * P - 8) / (ctxDots - 1), 3, RED))
+  y += 34
 
   const col4 = (W - 2 * P) / 4
   ;(
@@ -458,12 +388,11 @@ function textDots(text: string) {
 // --- state helpers ---------------------------------------------------------
 
 async function refreshStatus($: EngineInterface) {
-  const [u, c] = await Promise.all([read($, usage), read($, cold)])
+  const u = await read($, usage)
   const sum = sumUsage(u)
   const total = sum.input + sum.cacheWrite + sum.cacheRead + sum.output
   const parts = [`◉ ${compact(total)} tok`]
   if (u.costUsd !== undefined) parts.push(`$${u.costUsd.toFixed(2)}`)
-  if (c.coldPct !== undefined) parts.push(`cold ≈ ${c.coldPct.toFixed(1)}% of 5h`)
   baseStatus = total === 0 ? undefined : parts.join(' · ')
   paintStatus($)
 }
@@ -478,22 +407,13 @@ function cacheLabel(now: number) {
 }
 
 // ~4 characters per token for English and code; a rough count, not the tokenizer's.
-async function estimateDraft($: EngineInterface, draft: string) {
+function estimateDraft($: EngineInterface, draft: string) {
   if (!draft.trim()) {
     draftStatus = undefined
     paintStatus($)
     return
   }
-  const draftTokens = Math.ceil(draft.length / 4)
-  const [c, session] = await Promise.all([read($, cold), $.session.usage()])
-  const ctx = session.context.tokens ?? 0
-  const isWarm = cacheAt > 0 && cacheAt + cacheTtlMs > Date.now()
-  // The first request re-reads the context (or rewrites it when cold) and caches the new message.
-  const units = (isWarm ? ctx * 0.1 : ctx * writeWeight()) + draftTokens * writeWeight()
-  const pct = c.pctPerMUnits === undefined ? undefined : (c.pctPerMUnits * units) / 1_000_000
-  draftStatus =
-    `✎ ${compact(draftTokens)} tok` +
-    (pct === undefined ? '' : ` → send ≈ ${pct < 0.1 ? pct.toFixed(2) : pct.toFixed(1)}% 5h${isWarm ? '' : ' (cold)'}`)
+  draftStatus = `✎ ~${compact(Math.ceil(draft.length / 4))} tok`
   paintStatus($)
 }
 
@@ -568,7 +488,7 @@ export const register: Register = (on, options) => {
 
   on('prompt.edit', async ($, e, next) => {
     const box = await next(e)
-    void estimateDraft($, box.text)
+    estimateDraft($, box.text)
     return box
   })
 
@@ -576,12 +496,6 @@ export const register: Register = (on, options) => {
     draftStatus = undefined
     paintStatus($)
     return next(e)
-  })
-
-  on('turn.step', async function* ($, e, next) {
-    const res = yield* next(e)
-    if (res.usage) await recordStep($, res.usage, e.index === 0 && e.agentId === undefined)
-    return res
   })
 
   on('turn.start', async ($, e, next) => {
@@ -650,13 +564,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const [s, life, u, c, live] = await Promise.all([
-      read($, stats),
-      read($, lifetime),
-      read($, usage),
-      read($, cold),
-      read($, isLive),
-    ])
+    const [s, life, u, live] = await Promise.all([read($, stats), read($, lifetime), read($, usage), read($, isLive)])
 
     if (e.surface !== 'terminal') {
       const { Box, Svg, Button } = $.ui.resolve(e)
@@ -664,7 +572,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column" gap={1}>
           <Svg
-            source={svgHud(s, life, u, c, live)}
+            source={svgHud(s, life, u, live)}
             alt={`This chat used ${compact(sum.input + sum.cacheWrite + sum.cacheRead + sum.output)} tokens across ${u.models.length} models; ${s.toolCalls} tool calls, ${s.edits} edits`}
           />
           <Box flexDirection="row" gap={1}>
@@ -702,19 +610,9 @@ export const register: Register = (on, options) => {
           {sum.requests}
         </Text>
         <Text>
-          <Text dimColor>cold cache call </Text>
-          <Text color={c.coldPct === undefined ? MUTED : RED}>
-            {c.coldPct === undefined ? 'calibrating' : `≈ ${c.coldPct.toFixed(1)}% of 5h`}
-          </Text>
-          <Text dimColor>  5h used </Text>
-          {c.fiveHourPct === undefined ? '—' : `${c.fiveHourPct}%`}
+          <Text dimColor>5h limit used </Text>
+          {u.fiveHourPct === undefined ? '—' : `${u.fiveHourPct}%`}
         </Text>
-        {c.lastCold && (
-          <Text dimColor>
-            last cold {c.lastCold.before}% → {c.lastCold.after}% (+{(c.lastCold.after - c.lastCold.before).toFixed(1)}),
-            before-reading {c.lastCold.staleMinutes}m old
-          </Text>
-        )}
         <Text dimColor>
           in {compact(sum.input)} · cw {compact(sum.cacheWrite)} · cr {compact(sum.cacheRead)} · out {compact(sum.output)}
         </Text>

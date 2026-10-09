@@ -16,7 +16,7 @@ The pane opens at the start of each session. The `/glyph` command opens it again
 - **Cost and context.** The cost in US dollars, the context fill as a percentage, and the number of requests.
 - **Token types.** Input, cache-write, cache-read and output tokens.
 - **Tokens by model.** One row for each model in the chat. Each row shows the total, the share as a dot bar, and the four token types.
-- **Cold cache call.** The estimated part of the 5-hour usage limit that one request with a cold cache uses.
+- **5-hour limit.** The part of the 5-hour usage limit that is used, as Claude Code reports it. All chats share this limit.
 - **Code stats.** Tool calls, the most frequent tools, edits, files, changed lines, Bash errors and the longest turn.
 
 ### The status line
@@ -24,11 +24,11 @@ The pane opens at the start of each session. The `/glyph` command opens it again
 The status line under the prompt shows a short summary:
 
 ```
-◉ 5.14M tok · $2.95 · cold ≈ 3.1% of 5h · cache 52:10
+◉ 5.14M tok · $2.95 · cache 52:10
 ```
 
 - `cache 52:10` is the time until the prompt cache expires. The value `cache ● warm` shows during a turn. The value `cache ○ cold` shows after the cache expires.
-- While you type a message, the line starts with `✎`. It shows the approximate size of the draft and the estimated part of the 5-hour limit that the message uses.
+- While you type a message, the line starts with `✎` and the approximate size of the draft. The plugin uses about 4 characters for each token. It is not an exact count.
 
 ### In the terminal
 
@@ -49,33 +49,6 @@ The count includes the full chat, also the part before the plugin loaded. Reques
 ### The cache timer
 
 Each request resets the lifetime of the prompt cache. The plugin reads the time of the last response and the cache lifetime from the transcript. The lifetime is 1 hour or 5 minutes.
-
-### The 5-hour limit estimate
-
-After each response, the plugin reads the 5-hour usage percentage. It uses only changes between two responses less than 90 seconds apart. This step keeps the effect of other chats small.
-
-The plugin sets a weight for each token type:
-
-| Token type | Weight |
-|---|---|
-| Input | 1 |
-| Output | 5 |
-| Cache read | 0.1 |
-| Cache write, 1-hour lifetime | 2 |
-| Cache write, 5-minute lifetime | 1.25 |
-
-The plugin divides the change in percentage by the weighted tokens of the last 60 requests. A request with a cold cache writes the full context again. The estimate is this rate multiplied by the context size and the cache-write weight.
-
-The estimate shows "calibrating" until the percentage has moved by 0.3 points.
-
-The pane also shows the last cold request: the percentage before and after the request, and the age of the "before" reading. Other chats can change the percentage during that time.
-
-### Limits of the estimates
-
-- Anthropic does not publish how each token type counts against the usage limit. The weights come from the API prices.
-- The plugin gives all models the same weight.
-- Other chats that run at the same time can make the estimate too high.
-- The draft size uses about 4 characters for each token. It is not an exact count.
 
 ## Settings
 

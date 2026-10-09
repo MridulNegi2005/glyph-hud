@@ -36,26 +36,9 @@ export type ChatUsage = {
   models: ModelTally[]
   costUsd?: number
   contextPct?: number
+  fiveHourPct?: number
   error?: string
   scannedAt: number
-}
-
-export type LimitPair = { units: number; dPct: number }
-
-export type ColdMeasurement = {
-  before: number
-  after: number
-  staleMinutes: number
-  at: number
-}
-
-export type ColdEstimate = {
-  pairs: LimitPair[]
-  prev?: { pct: number; at: number }
-  fiveHourPct?: number
-  pctPerMUnits?: number
-  coldPct?: number
-  lastCold?: ColdMeasurement
 }
 
 declare module 'claude-code' {
@@ -64,7 +47,6 @@ declare module 'claude-code' {
       stats: GlyphStats
       lifetime: GlyphLifetime
       usage: ChatUsage
-      cold: ColdEstimate
       isLive: boolean
     }
   }
